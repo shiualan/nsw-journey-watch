@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c141c">
+  <meta name="description" content="Compare public transport journeys across Sydney using live TfNSW data.">
+  <title>Journey Watch | NSW live route comparison</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="site-header">
+      <div class="brand">
+        <div class="brand-symbol" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="brand-name">journey<span>watch</span><i>.</i></div>
+      </div>
+      <div class="header-meta"><span class="small-dot"></span> SYDNEY, NSW <span class="dot-separator">/</span> <span id="clock">--:--</span> AEDT/AEST</div>
+      <div class="header-actions">
+        <button type="button" class="button button-ghost button-key" id="openSettings" aria-label="API settings"><span aria-hidden="true">&#9881;</span> <span>API settings</span></button>
+        <button type="button" class="button button-accent" id="addRouteTop"><span class="plus">+</span> New route</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow"><span class="stripe"></span> REAL-TIME ROUTE INTELLIGENCE</div>
+          <h1>Know your options.<br><em>Move smarter.</em></h1>
+          <p>Compare alternative NSW journeys, then lock the actual services to follow them using GTFS-Realtime vehicle positions and trip updates, with station names and service matching from cached timetables.</p>
+          <div class="hero-actions"><button type="button" class="button button-main" id="addRouteHero">Build a comparison <span>&rarr;</span></button><button type="button" class="button button-outline" id="loadSample">Load Blacktown example</button></div>
+        </div>
+        <div class="live-monitor">
+          <div class="monitor-head"><span>NETWORK MONITOR</span><span class="pulsing-indicator"><span></span><span id="monitorState">NOT CONNECTED</span></span></div>
+          <div class="monitor-content"><div class="monitor-graphic" aria-hidden="true"><span class="rail rail-one"></span><span class="rail rail-two"></span><span class="stop-circle stop-a"></span><span class="stop-circle stop-b"></span><span class="stop-circle stop-c"></span><span class="rail-glow"></span></div><div class="monitor-stats"><span class="overline">NEXT AUTO-REFRESH</span><div class="monitor-counter" id="countdown">--<span>s</span></div><div class="monitor-caption" id="refreshCaption">Connect your API key to begin</div></div></div>
+          <div class="monitor-bottom"><span>DATA SOURCE <strong>TRANSPORT FOR NSW</strong></span><span>REFRESH INTERVAL <strong>60 SEC</strong></span></div>
+        </div>
+      </section>
+
+      <section class="overview" aria-label="Dashboard overview">
+        <div class="overview-item"><div class="overview-label">SAVED ALTERNATIVES <span class="overview-icon">&#8644;</span></div><div class="overview-number" id="routeCount">00</div><div class="overview-detail">Across your comparisons</div></div>
+        <div class="overview-item"><div class="overview-label">JOURNEY RESULTS <span class="overview-icon">&#9678;</span></div><div class="overview-number" id="liveCount">00</div><div class="overview-detail">Updated from TfNSW</div></div>
+        <div class="overview-item"><div class="overview-label">FASTEST ARRIVAL <span class="overview-icon">&#8599;</span></div><div class="overview-number smaller" id="bestArrival">--:--</div><div class="overview-detail" id="bestArrivalCaption">Waiting for comparison</div></div>
+        <div class="overview-item last"><div class="overview-label">LAST UPDATED <span class="overview-icon">&#8635;</span></div><div class="overview-number smaller" id="lastUpdated">--:--</div><div class="overview-detail" id="updatedCaption">No live data yet</div></div>
+      </section>
+
+      <section class="dash-section" aria-labelledby="savedTitle">
+        <div class="section-header"><div><div class="eyebrow muted">YOUR DASHBOARD</div><h2 id="savedTitle">Route comparisons <span id="groupCount" class="group-count">0</span></h2></div><div class="section-controls"><span class="refresh-text" id="dataStatus">No API key</span><button type="button" id="lockAll" class="button button-main">Lock shown journeys</button><button id="refreshNow" type="button" class="button button-outline refresh-button"><span aria-hidden="true">&#8635;</span> Refresh now</button></div></div>
+        <div class="gtfs-band" id="timetableBand"><div><div class="gtfs-band-title">STATIC GTFS TIMETABLES <span class="gtfs-dot" id="gtfsDot"></span></div><p id="gtfsBandStatus">Schedule indexes not checked yet. Synchronise schedules to enable named-stop tracking.</p></div><button class="button button-outline" type="button" id="manageTimetables">Manage timetables &rarr;</button></div>
+        <div id="banner" class="banner" hidden role="status"></div>
+        <div id="comparisonGroups" class="comparison-groups"></div>
+        <div id="emptyState" class="empty-state">
+          <div class="empty-glyph" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+          <div class="eyebrow muted">NOTHING TO COMPARE YET</div><h3>Your next move,<br>made clearer.</h3><p>Start with two routes to the same destination, or load our Blacktown to Central example to see how the dashboard works.</p>
+          <div class="empty-actions"><button type="button" class="button button-accent" id="addRouteEmpty">Create your first route <span>&rarr;</span></button><button type="button" class="text-button" id="loadSampleEmpty">Try the example</button></div>
+        </div>
+      </section>
+      <footer class="footer"><div class="footer-brand">journeywatch<span>.</span></div><p>Fixed trips use exact GTFS trip identifiers for GPS positions when available. Timetable-only progress is never presented as GPS-confirmed. Data may be delayed or unavailable. Independent of Transport for NSW.</p><a href="https://opendata.transport.nsw.gov.au/" target="_blank" rel="noopener noreferrer">Data: Transport for NSW <span>&nearr;</span></a></footer>
+    </main>
+  </div>
+
+  <dialog id="settingsDialog" class="dialog"><div class="dialog-header"><div><div class="eyebrow muted">CONNECTION</div><h2>API settings</h2></div><button type="button" class="close-button" data-close="settingsDialog" aria-label="Close">&times;</button></div><form id="settingsForm"><label for="apiKey">Transport for NSW API key</label><div class="input-with-action"><input id="apiKey" type="password" autocomplete="off" placeholder="Enter your TfNSW API key" required><button type="button" id="toggleKey" class="show-key">Show</button></div><p class="helper" id="connectionInfo">Your key stays in this browser tab's memory and is sent only to your local app server, which proxies TfNSW requests. GTFS vehicle positions, trip updates and static timetables may require separate subscriptions on the portal. The key is not saved to disk. Use this app privately.</p><div class="connection-check"><button type="button" id="checkConnection" class="button button-outline">Check API access</button><p class="helper">Checks stop search and access to the selected timetable and realtime feeds. No timetable files are downloaded.</p><div id="connectionResults" role="status" aria-live="polite"></div></div><div class="timetable-settings">
+          <div class="timetable-title"><h3>Static GTFS schedule data</h3><span>LOCAL SERVER CACHE</span></div>
+          <p class="helper">Choose the timetable feeds to download from TfNSW. Data is cached on the Node/Docker host; your API key is not written to disk. Only matched services receive automatic GTFS bindings. Sync to improve service matching; you can compare and lock journeys before syncing.</p>
+          <div class="schedule-feeds" id="timetableFeedList"><span class="helper">Loading feed availability...</span></div>
+          <div class="schedule-actions"><button type="button" id="suggestTimetables" class="button button-outline">Select feeds for my routes</button><button type="button" id="syncTimetables" class="button button-main" disabled>Sync selected timetables</button></div>
+          <label class="auto-gtfs"><input type="checkbox" id="autoSyncSchedules"> Auto-sync selected stale feeds once per day while the dashboard is open</label>
+          <p class="sync-message" id="syncMessage" aria-live="polite">The first synchronisation, particularly buses, may take some time.</p>
+        </div><div class="settings-links"><a href="https://opendata.transport.nsw.gov.au/developers/api-basics" target="_blank" rel="noopener noreferrer">Get an API key &nearr;</a><span>Refresh: every 60 seconds while open</span></div><div class="dialog-footer"><button type="button" class="button button-outline" id="disconnect">Disconnect</button><button type="submit" class="button button-accent">Connect API <span>&rarr;</span></button></div></form></dialog>
+
+  <dialog id="routeDialog" class="dialog route-dialog"><div class="dialog-header"><div><div class="eyebrow muted">ROUTE BUILDER</div><h2 id="routeDialogTitle">Add an alternative</h2></div><button type="button" class="close-button" data-close="routeDialog" aria-label="Close">&times;</button></div><form id="routeForm"><label for="routeLabel">Name this route</label><input id="routeLabel" maxlength="90" required placeholder="e.g. Bus via Parramatta then train"><div class="route-builder-title"><span>Journey legs</span><span class="builder-caption">Select a stop from the search results</span></div><div id="routeBuilder"></div><div class="builder-actions"><button type="button" id="addInterchange" class="text-button">+ Add interchange</button><label class="buffer-label">Transfer buffer <input id="transferMinutes" type="number" min="0" max="30" value="5"> min</label></div><div id="routeError" class="form-error" role="alert"></div><div class="dialog-footer"><button type="button" class="button button-outline" data-close="routeDialog">Cancel</button><button type="submit" class="button button-accent">Save route <span>&rarr;</span></button></div></form></dialog>
+</body>
+</html>

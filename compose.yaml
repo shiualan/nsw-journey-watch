@@ -1,0 +1,19 @@
+services:
+  journey-watch:
+    build: .
+    container_name: journey-watch
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4173:4173"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4173
+      GTFS_DATA_DIR: /app/data/gtfs
+    volumes:
+      - gtfs-cache:/app/data/gtfs
+
+volumes:
+  gtfs-cache:
