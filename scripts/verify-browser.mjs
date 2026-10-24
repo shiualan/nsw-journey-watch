@@ -2,6 +2,12 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 
+let verificationKey='';
+if (process.argv.includes('--key-stdin')) {
+  for await (const chunk of process.stdin) verificationKey+=chunk;
+  verificationKey=verificationKey.trim().replace(/^apikey\s+/i,'');
+}
+if (!verificationKey || /[\r\n]/.test(verificationKey)) throw new Error('Provide a TfNSW key through standard input using --key-stdin. The app itself never reads a key from environment variables.');
 const base=process.env.TARGET_URL || 'http://127.0.0.1:4173';
 const directory=new URL('../data/qa/',import.meta.url);
 await mkdir(directory,{recursive:true});
@@ -13,6 +19,11 @@ const checks=[];
 page.on('pageerror',error=>errors.push(error.message));
 page.on('console',message=>{if(message.type()==='error')errors.push(message.text());});
 const record=(name,details={})=>{checks.push({name,...details}); console.log(JSON.stringify({name,...details}));};
+async function connect(surface) {
+  await surface.locator('#openSettings').click();
+  await surface.locator('#apiKey').fill(verificationKey);
+  await surface.locator('#settingsForm button[type=submit]').click();
+}
 async function screenshot(name) {await page.screenshot({path:new URL(name,directory).pathname,fullPage:true});}
 async function fits(surface) {
   const bounds=await surface.evaluate(()=>({width:innerWidth,scrollWidth:document.documentElement.scrollWidth}));
@@ -21,9 +32,10 @@ async function fits(surface) {
 }
 try {
   await page.goto(base);
-  await page.getByText('SERVER KEY READY',{exact:true}).waitFor();
+  await page.getByText('NOT CONNECTED',{exact:true}).waitFor();
+  await connect(page);
   await screenshot('desktop-empty.png');
-  record('Initial dashboard uses the server key',await fits(page));
+  record('Initial dashboard accepts an API key without server configuration',await fits(page));
   const comparison=page.waitForResponse(response=>response.url().endsWith('/api/compare')&&response.request().method()==='POST',{timeout:120000});
   await page.locator('#loadSample').click();
   const response=await comparison;
@@ -37,25 +49,40 @@ try {
   record('Live Blacktown example returns both alternatives',{routes:planned.results.map(result=>({label:result.data.label,realtime:result.data.realtime,arrival:result.data.arrival}))});
   const tracking=page.waitForResponse(response=>response.url().endsWith('/api/track'),{timeout:120000});
   await page.locator('#lockAll').click();
-  const tracked=await (await tracking).json();
+  let tracked=await (await tracking).json();
   await page.getByText('FIXED JOURNEY TRACKING',{exact:true}).first().waitFor();
   assert.equal(tracked.results.length,2);
+  await page.locator('#openSettings').click();
+  await page.locator('#suggestTimetables').click();
+  const linkedRefresh=page.waitForResponse(response=>response.url().endsWith('/api/track'),{timeout:300000});
+  await page.locator('#syncTimetables').click();
+  await page.waitForFunction(()=>!document.getElementById('syncTimetables').disabled,undefined,{timeout:300000});
+  tracked=await (await linkedRefresh).json();
+  const portable=await page.evaluate(()=>JSON.parse(localStorage.getItem('journey-watch:fixed:v2')));
+  assert.ok(portable.some(track=>track.legs.some(leg=>leg.staticPath)),'At least one live service should have a saved timetable path');
+  await page.locator('[data-close="settingsDialog"]').click();
+  record('Matched timetable paths saved with locked services');
   await page.locator('.tracking-details summary').first().click();
   await screenshot('desktop-tracking.png');
   record('Locked alternatives refresh from live feeds',{legs:tracked.results.flatMap(result=>result.data.fixed.legs.map(leg=>({line:leg.line,match:leg.match,hasGps:Boolean(leg.gps),staticStatus:leg.staticStatus}))),feedErrors:tracked.feedStatus?.errors || []});
   await page.locator('#openSettings').click();
-  assert.equal(await page.locator('#apiKey').inputValue(),'');
-  assert.match(await page.locator('#connectionInfo').innerText(),/stays on the server/);
+  assert.equal(await page.locator('#apiKey').inputValue(),verificationKey);
+  assert.match(await page.locator('#connectionInfo').innerText(),/tab’s memory/);
   await page.locator('#suggestTimetables').click();
   const access=page.waitForResponse(response=>response.url().endsWith('/api/connection/check'),{timeout:180000});
   await page.locator('#checkConnection').click();
   const accessResult=await (await access).json();
   await page.locator('.connection-results').waitFor();
   await screenshot('desktop-settings.png');
-  record('API subscriptions checked without browser key exposure',{results:accessResult.results});
+  record('API subscriptions checked using the tab key',{results:accessResult.results});
   await page.locator('[data-close="settingsDialog"]').click();
   const before=await page.evaluate(()=>localStorage.getItem('journey-watch:fixed:v2'));
   await page.reload();
+  await page.getByText('NOT CONNECTED',{exact:true}).waitFor();
+  await page.locator('#openSettings').click();
+  assert.equal(await page.locator('#apiKey').inputValue(),'');
+  await page.locator('#apiKey').fill(verificationKey);
+  await page.locator('#settingsForm button[type=submit]').click();
   await page.getByText('FIXED JOURNEY TRACKING',{exact:true}).first().waitFor();
   const after=await page.evaluate(()=>localStorage.getItem('journey-watch:fixed:v2'));
   const ids=value=>JSON.parse(value).map(track=>track.legs.map(leg=>leg.tripId));
@@ -97,12 +124,16 @@ try {
   assert.ok(await page.locator('#refreshNow').isDisabled());
   await page.locator('#openSettings').click();
   await page.locator('#settingsForm button[type=submit]').click();
+  assert.ok(await page.locator('#settingsDialog').isVisible(),'Empty key cannot reconnect');
+  await page.locator('#apiKey').fill(verificationKey);
+  await page.locator('#settingsForm button[type=submit]').click();
   await page.waitForFunction(()=>document.getElementById('monitorState').textContent!=='NOT CONNECTED');
-  record('Disconnect and reconnect with an empty key field use server credentials');
+  record('Disconnect clears the key; reconnect requires a key');
   const mobile=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
   const mobilePage=await mobile.newPage();
   await mobilePage.goto(base);
-  await mobilePage.getByText('SERVER KEY READY',{exact:true}).waitFor();
+  await mobilePage.getByText('NOT CONNECTED',{exact:true}).waitFor();
+  await connect(mobilePage);
   const mobileBounds=await fits(mobilePage);
   await mobilePage.screenshot({path:new URL('mobile-empty.png',directory).pathname,fullPage:true});
   await mobilePage.locator('#openSettings').click();
@@ -113,7 +144,7 @@ try {
   const mobileLive=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true,storageState:await context.storageState()});
   const livePage=await mobileLive.newPage();
   const mobileTracking=livePage.waitForResponse(response=>response.url().endsWith('/api/track'),{timeout:120000});
-  await livePage.goto(base); await mobileTracking;
+  await livePage.goto(base); await connect(livePage); await mobileTracking;
   await livePage.locator('.tracking-panel').first().waitFor();
   assert.equal(await livePage.locator('.route-card').count(),2);
   await livePage.locator('.tracking-details summary').first().click();
@@ -124,10 +155,10 @@ try {
   assert.deepEqual(errors,[],'Browser console must be clean');
   record('No browser JavaScript or console errors');
 } catch(error) {
-  record('Verification failure',{message:error.message});
+  record('Verification failure',{message:error.message.replaceAll(verificationKey,'[redacted]')});
   await screenshot('failure.png');
-  throw error;
+  throw new Error(error.message.replaceAll(verificationKey,'[redacted]'));
 } finally {
-  await writeFile(new URL('browser-report.json',directory),JSON.stringify({checkedAt:new Date().toISOString(),checks,errors},null,2));
+  await writeFile(new URL('browser-report.json',directory),JSON.stringify({checkedAt:new Date().toISOString(),checks,errors},null,2).replaceAll(verificationKey,'[redacted]'));
   await browser.close();
 }

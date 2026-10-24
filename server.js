@@ -1,5 +1,4 @@
 import http from 'node:http';
-import './src/env.js';
 import { readFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -10,7 +9,6 @@ import { pollFixedTracks, validateTrack } from './src/tracking.js';
 import { staticStatus, syncStaticFeeds } from './src/gtfs-static.js';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
-const SERVER_KEY = process.env.TFNSW_API_KEY || process.env.Transport_API || '';
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '127.0.0.1';
 const ASSETS = new Map([
@@ -28,18 +26,35 @@ function json(res, status, data) {
 }
 
 function apiKey(req) {
-  const raw = String(req.headers['x-tfnsw-key'] || SERVER_KEY).trim().replace(/^apikey\s+/i, '');
+  const raw = String(req.headers['x-tfnsw-key'] || '').trim().replace(/^apikey\s+/i, '');
   if (!raw || raw.length > 256 || /[\r\n]/.test(raw)) throw new Error('Enter a valid TfNSW API key under API settings.');
   return raw;
 }
 
+const MAX_BODY_BYTES=3_500_000; // Below Vercel’s 4.5 MB request limit, including saved paths.
 async function getBody(req) {
+  // Vercel may parse JSON before invoking a Node handler.
+  if (req.body !== undefined) {
+    const body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    if (Buffer.byteLength(body) > MAX_BODY_BYTES) throw new Error('Request too large.');
+    try { return JSON.parse(body); } catch { throw new Error('Invalid JSON request.'); }
+  }
   let body = '';
+  let bytes=0;
   for await (const chunk of req) {
+    bytes+=Buffer.isBuffer(chunk)?chunk.length:Buffer.byteLength(chunk);
     body += chunk.toString('utf8');
-    if (body.length > 350_000) throw new Error('Request too large.');
+    if (bytes > MAX_BODY_BYTES) throw new Error('Request too large.');
   }
   try { return JSON.parse(body); } catch { throw new Error('Invalid JSON request.'); }
+}
+
+function validateTracks(tracks) {
+  if (!Array.isArray(tracks) || tracks.length < 1 || tracks.length > 12) throw new Error('Track 1–12 routes per request.');
+  const validated=tracks.map(validateTrack);
+  if (validated.reduce((sum,t)=>sum+t.legs.length,0)>40) throw new Error('Too many tracked public transport services.');
+  if (new Set(validated.map(t=>t.id)).size!==validated.length) throw new Error('Duplicate tracked route ID.');
+  return validated;
 }
 
 export async function handler(req, res) {
@@ -62,7 +77,7 @@ export async function handler(req, res) {
       try { return json(res, 200, await staticStatus()); }
       catch { return json(res, 500, { error:'Cannot read timetable cache status.' }); }
     }
-    if (url.pathname === '/api/config' && req.method === 'GET') return json(res, 200, { serverKeyConfigured: Boolean(SERVER_KEY.trim()) });
+    if (url.pathname === '/api/config' && req.method === 'GET') return json(res, 200, { serverKeyConfigured: false, keyMode:'browser-tab', timetableStorage:'temporary' });
     let key;
     try { key = apiKey(req); } catch (e) { return json(res, 400, { error: e.message }); }
     if (url.pathname === '/api/connection/check' && req.method === 'POST') {
@@ -74,7 +89,14 @@ export async function handler(req, res) {
     if (url.pathname === '/api/static/sync' && req.method === 'POST') {
       try {
         const body = await getBody(req);
-        return json(res, 202, await syncStaticFeeds(body.feeds, key));
+        if (!Array.isArray(body.feeds) || body.feeds.length !== 1) throw new Error('Sync one timetable feed per request.');
+        const tracks = body.tracks === undefined ? [] : validateTracks(body.tracks);
+        const synced = await syncStaticFeeds(body.feeds, key, {waitForCompletion:true});
+        const status = await staticStatus();
+        const failure = status.feeds[body.feeds[0]]?.job;
+        if (failure?.status === 'error') return json(res, 502, {error:failure.error});
+        const linked = tracks.length ? await pollFixedTracks(tracks,key) : {};
+        return json(res, 200, {...synced,...linked,status});
       } catch (e) { return json(res, /already in progress/.test(e.message) ? 409 : 400, { error:e.message }); }
     }
     if (url.pathname === '/api/stops' && req.method === 'GET') {
@@ -87,16 +109,7 @@ export async function handler(req, res) {
       let tracks;
       try {
         const body = await getBody(req);
-        if (!Array.isArray(body.tracks) || body.tracks.length < 1 || body.tracks.length > 12) {
-          throw new Error('Track 1–12 routes per request.');
-        }
-        tracks = body.tracks.map(validateTrack);
-        if (tracks.reduce((sum, t) => sum + t.legs.length, 0) > 40) {
-          throw new Error('Too many tracked public transport services.');
-        }
-        if (new Set(tracks.map(t => t.id)).size !== tracks.length) {
-          throw new Error('Duplicate tracked route ID.');
-        }
+        tracks = validateTracks(body.tracks);
       } catch (e) { return json(res, 400, { error: e.message }); }
       try { return json(res, 200, await pollFixedTracks(tracks, key)); }
       catch (e) { return json(res, 502, { error: 'GTFS-Realtime processing failed; try refreshing.' }); }

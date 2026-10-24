@@ -7,7 +7,7 @@ const { handler } = await import('../server.js');
 
 async function request(url, { method = 'GET', headers = {}, body } = {}) {
   const req = Readable.from(body ? [JSON.stringify(body)] : []);
-  Object.assign(req, { url, method, headers: { host: 'localhost:4173', ...headers } });
+  Object.assign(req, { url, method, headers: { host: 'localhost:4173', 'x-tfnsw-key':'tab-secret', ...headers } });
   const res = {
     headers: {}, status: 200, text: '',
     setHeader(name, value) { this.headers[name] = value; },
@@ -18,10 +18,11 @@ async function request(url, { method = 'GET', headers = {}, body } = {}) {
   return res;
 }
 
-test('server key config exposes availability only and denies cross-site access', async () => {
+test('configuration requires tab credentials even if a server environment key exists and denies cross-site access', async () => {
   const result = await request('/api/config');
+  assert.equal((await request('/api/stops?q=Central',{headers:{'x-tfnsw-key':''}})).status,400);
   assert.equal(result.status, 200);
-  assert.deepEqual(JSON.parse(result.text), { serverKeyConfigured: true });
+  assert.deepEqual(JSON.parse(result.text), { serverKeyConfigured: false, keyMode:'browser-tab', timetableStorage:'temporary' });
   assert.ok(!result.text.includes(process.env.TFNSW_API_KEY));
   assert.equal(result.headers['Cache-Control'], 'no-store');
   assert.equal((await request('/api/config', {headers:{origin:'https://example.org'}})).status, 403);
@@ -29,7 +30,7 @@ test('server key config exposes availability only and denies cross-site access',
   assert.equal((await request('/.env')).status, 404);
 });
 
-test('stop search uses server key, accepts tab override, and reports upstream denial', async t => {
+test('stop search uses only the request key and reports upstream denial', async t => {
   const keys = [];
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     assert.equal(url.hostname, 'api.transport.nsw.gov.au');
@@ -40,7 +41,7 @@ test('stop search uses server key, accepts tab override, and reports upstream de
   assert.equal(result.status, 200);
   assert.equal(JSON.parse(result.text).stops[0].name, 'Central Station');
   await request('/api/stops?q=Central', {headers:{'x-tfnsw-key':'apikey tab-secret'}});
-  assert.deepEqual(keys, ['apikey server-test-secret','apikey tab-secret']);
+  assert.deepEqual(keys, ['apikey tab-secret','apikey tab-secret']);
   globalThis.fetch.mock.mockImplementation(async () => new Response('', {status:401}));
   const failure = await request('/api/stops?q=Central');
   assert.equal(failure.status, 502);

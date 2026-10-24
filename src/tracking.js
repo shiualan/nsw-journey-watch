@@ -51,6 +51,17 @@ export function validateTrack(input) {
     if (leg.feedId && !FEEDS[leg.feedId]) throw new Error('Unknown GTFS-Realtime feed.');
     if (leg.tripId && !validId(leg.tripId)) throw new Error('Invalid GTFS trip ID.');
     if (leg.startDate && !/^\d{8}$/.test(leg.startDate)) throw new Error('Invalid GTFS service date.');
+    if (leg.staticPath) {
+      const path=leg.staticPath;
+      if (!leg.tripId || path.tripId!==leg.tripId || path.feedId!==leg.feedId || path.serviceDate!==leg.startDate ||
+          path.version!==1 || !validIso(path.importedAt) || !Array.isArray(path.stops) || path.stops.length<2 || path.stops.length>150 ||
+          path.stops.some((stop,i)=>!validId(stop.stopId) || !validId(stop.name,200) || !validIso(stop.scheduledArrival) ||
+            !validIso(stop.scheduledDeparture) || !Number.isSafeInteger(stop.sequence) || stop.sequence<0 ||
+            (i>0 && stop.sequence<=path.stops[i-1].sequence)) ||
+          path.fromStopId!==path.stops[0].stopId || path.toStopId!==path.stops.at(-1).stopId) {
+        throw new Error('Invalid saved timetable path. Clear the binding and sync the service again.');
+      }
+    }
     if (leg.tripIdCandidates && (!Array.isArray(leg.tripIdCandidates) || leg.tripIdCandidates.length > 10 || leg.tripIdCandidates.some(id => !validId(id)))) throw new Error('Invalid trip ID candidates.');
   }
   return input;
@@ -397,7 +408,8 @@ export async function pollFixedTracks(inputs, apiKey, options = {}) {
   // Resolve static indexes once per leg. Timetable failures never prevent the
   // real-time feed result from being returned to the user.
   const staticByTrack = new Map();
-  const lookup = options.staticLookup || (async leg => leg.tripId ?
+  const lookup = options.staticLookup || (async leg => leg.staticPath ?
+    {status:'saved',path:leg.staticPath} : leg.tripId ?
     {status:'bound',path:await staticPathForLeg(leg)} : matchStaticLeg(leg,{now}));
   for(const track of tracks){
     const info={};

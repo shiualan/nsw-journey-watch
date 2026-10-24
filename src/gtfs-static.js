@@ -7,6 +7,7 @@
  */
 import { createReadStream, createWriteStream } from 'node:fs';
 import { open, readFile, writeFile, rename, mkdir, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { Readable, Transform } from 'node:stream';
@@ -15,7 +16,7 @@ import { pipeline } from 'node:stream/promises';
 import { nswDateTime, throttledRequest } from './tfnsw.js';
 import { FEEDS, feedsForLeg } from './tracking.js';
 
-const ROOT = resolve(process.env.GTFS_DATA_DIR || './data/gtfs');
+const ROOT = resolve(process.env.GTFS_DATA_DIR || join(tmpdir(),'journey-watch-gtfs'));
 const STATIC_PATHS = Object.freeze({
   buses: 'v1/gtfs/schedule/buses',
   sydneytrains: 'v1/gtfs/schedule/sydneytrains', // IMPORTANT: v1 static pairs with v2 real-time
@@ -251,7 +252,7 @@ export async function staticStatus() {
       stale:!meta?.importedAt||Date.now()-Date.parse(meta.importedAt)>FRESH_MS,
       job:syncJobs.get(id)||null };
   }));
-  return {feeds:jobs, running:syncRunning};
+  return {feeds:jobs, running:syncRunning, storage:'temporary', syncMode:'request'};
 }
 export async function syncStaticFeeds(feedIds,key,options={}) {
   if(!Array.isArray(feedIds)||feedIds.length===0||feedIds.length>9||feedIds.some(id=>!validFeed(id))||new Set(feedIds).size!==feedIds.length) throw new Error('Choose 1–9 supported timetable feeds.');
@@ -275,8 +276,9 @@ export async function syncStaticFeeds(feedIds,key,options={}) {
       }
     } finally { syncRunning=false; }
   };
-  // The web endpoint responds immediately; ingestion finishes on the Node server.
-  void doSync().catch(()=>{syncRunning=false;});
+  // Hosted requests wait for ingestion; no work is abandoned after responding.
+  if (options.waitForCompletion) await doSync();
+  else void doSync().catch(()=>{syncRunning=false;});
   return { started:feedIds };
 }
 
@@ -363,7 +365,7 @@ function matchedPath(index,trip,originIndex,destinationIndex,serviceDate,feedId,
     lat:index.stops[s[0]]?.[2]?Number(index.stops[s[0]][2]):null,
     lon:index.stops[s[0]]?.[3]?Number(index.stops[s[0]][3]):null
   }));
-  return {feedId,tripId,serviceDate,route:index.routes[trip[0]]?.[0]||'',fromStopId:trip[4][originIndex][0],toStopId:trip[4][destinationIndex][0],stops:points};
+  return {version:1,importedAt:index.meta.importedAt,feedId,tripId,serviceDate,route:index.routes[trip[0]]?.[0]||'',fromStopId:trip[4][originIndex][0],toStopId:trip[4][destinationIndex][0],stops:points};
 }
 function evaluateTrip(index,leg,feedId,tripId,trip,dates=serviceDates(leg.departure)) {
   const wantDep=Date.parse(leg.plannedDeparture||leg.departure), wantArr=Date.parse(leg.plannedArrival||leg.arrival);

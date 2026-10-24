@@ -8,10 +8,11 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "node --test",
-    "qa:live": "node scripts/verify-browser.mjs"
+    "qa:live": "node scripts/verify-browser.mjs",
+    "build": "node scripts/build.mjs"
   },
   "engines": {
-    "node": ">=22"
+    "node": "22.x"
   },
   "devDependencies": {
     "playwright": "^1.64.1"

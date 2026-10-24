@@ -31,9 +31,8 @@ function readTracks() {
 let routes = readRoutes();
 let tracks = readTracks();
 let trackedResults = new Map();
-let serverKeyConfigured = false;
 let disconnected = false;
-const connected = () => !disconnected && Boolean(key || serverKeyConfigured);
+const connected = () => !disconnected && Boolean(key);
 let key = ''; // Intentionally never persisted to storage.
 let routeResults = new Map();
 let routeChanges = new Map();
@@ -108,11 +107,11 @@ function updateClock() {
   if (!refreshInProgress && connected() && routes.length && nextRefreshAt && Date.now() >= nextRefreshAt && document.visibilityState === 'visible') refreshRoutes();
 }
 function setConnectionUI() {
-  $('monitorState').textContent = !connected() ? 'NOT CONNECTED' : lastRefreshErrors ? 'UPDATE ISSUES' : lastSuccessfulAt ? routes.some(route=>visibleResult(route)?.data?.realtime) ? 'LIVE DATA' : 'RESULTS READY' : serverKeyConfigured && !key ? 'SERVER KEY READY' : 'KEY ENTERED';
+  $('monitorState').textContent = !connected() ? 'NOT CONNECTED' : lastRefreshErrors ? 'UPDATE ISSUES' : lastSuccessfulAt ? routes.some(route=>visibleResult(route)?.data?.realtime) ? 'LIVE DATA' : 'RESULTS READY' : 'KEY ENTERED';
   document.querySelector('.pulsing-indicator').classList.toggle('connected', connected());
   $('refreshCaption').textContent = !connected() ? 'Connect your API key to begin' : !routes.length ? 'Add routes to begin monitoring' : refreshInProgress ? 'Checking TfNSW services...' : 'Automatic updates while this tab is open';
   $('dataStatus').textContent = !connected() ? 'No API key' : refreshInProgress ? 'Fetching live data...' : lastRefreshErrors ? 'Some updates unavailable' : lastSuccessfulAt ? `Last checked ${formatTime(lastSuccessfulAt)}` : 'Ready to connect';
-  $('refreshNow').disabled = !connected() || !routes.length || refreshInProgress;
+  $('refreshNow').disabled = !connected() || !routes.length || refreshInProgress || syncInProgress;
   $('lockAll').disabled = !connected() || refreshInProgress || !routes.some(r => !tracks.has(r.id) && routeResults.get(r.id)?.ok);
   $('lockAll').textContent = `Lock shown journeys${tracks.size ? ` (${tracks.size} locked)` : ''}`;
 }
@@ -260,12 +259,36 @@ async function fetchApi(path, opts = {}) {
     cache: 'no-store'
   });
   let payload;
-  try { payload = await result.json(); } catch { throw new Error('The local app did not return valid JSON.'); }
+  try { payload = await result.json(); } catch { throw new Error('The app server did not return valid JSON.'); }
   if (!result.ok) throw new Error(payload?.error || `Request failed with HTTP ${result.status}.`);
   return payload;
 }
+function acceptTrackedResults(payload) {
+  trackedResults = new Map((payload.results || []).map(item => [item.data.id,item]));
+    let changed = false;
+    for (const item of payload.results || []) {
+      const track = tracks.get(item.data.id);
+      if (!track) continue;
+      for (const leg of item.data.fixed?.legs || []) {
+        const original = track.legs.find(l=>l.id === leg.id);
+        if (original && !original.tripId && (leg.binding?.source === 'static-auto' || leg.match === 'matched')) {
+          original.tripId = leg.tripId;
+          original.feedId = leg.feedId;
+          original.startDate = leg.startDate || '';
+          original.bindingSource = leg.binding?.source || 'realtime-exact';
+          changed = true;
+        }
+        if (original && leg.staticPath && original.tripId===leg.staticPath.tripId && original.feedId===leg.staticPath.feedId) {
+          if (!original.staticPath || original.staticPath.importedAt!==leg.staticPath.importedAt) changed=true;
+          original.staticPath=leg.staticPath;
+        }
+      }
+    }
+    if (changed) storeTracks();
+}
+
 async function refreshRoutes() {
-  if (!connected() || !routes.length || refreshInProgress) return;
+  if (!connected() || !routes.length || refreshInProgress || syncInProgress) return;
   const version = refreshVersion;
   refreshInProgress = true; lastRefreshAt = Date.now(); nextRefreshAt = lastRefreshAt + API_INTERVAL_MS;
   render();
@@ -295,23 +318,7 @@ async function refreshRoutes() {
   }
   if (results[1].status === 'fulfilled' && results[1].value) {
     const payload = results[1].value;
-    trackedResults = new Map((payload.results || []).map(item => [item.data.id,item]));
-    let changed = false;
-    for (const item of payload.results || []) {
-      const track = tracks.get(item.data.id);
-      if (!track) continue;
-      for (const leg of item.data.fixed?.legs || []) {
-        const original = track.legs.find(l=>l.id === leg.id);
-        if (original && !original.tripId && (leg.binding?.source === 'static-auto' || leg.match === 'matched')) {
-          original.tripId = leg.tripId;
-          original.feedId = leg.feedId;
-          original.startDate = leg.startDate || '';
-          original.bindingSource = leg.binding?.source || 'realtime-exact';
-          changed = true;
-        }
-      }
-    }
-    if (changed) storeTracks();
+    acceptTrackedResults(payload);
     if (payload.feedStatus?.errors?.length) errors.push(`${payload.feedStatus.errors.length} GTFS feed(s) unavailable; see tracking details`);
     successes++;
   } else if (results[1].status === 'rejected') {
@@ -352,6 +359,7 @@ function bindTripId(routeId, legId, tripId, feedId = '', startDate = '') {
   if (!leg) return;
   if (tripId && (tripId.length > 160 || /[\x00-\x1f\x7f]/.test(tripId))) { showBanner('Enter a valid GTFS trip ID (maximum 160 characters).',true); return; }
   refreshVersion++;
+  delete leg.staticPath;
   leg.tripId = tripId;
   leg.feedId = feedId;
   leg.startDate = startDate;
@@ -528,27 +536,25 @@ function renderScheduleSettings() {
   const feeds=scheduleStatus?.feeds || {};
   $('timetableFeedList').innerHTML = Object.entries(SCHEDULE_FEED_NAMES).map(([id,name])=>{
     const info=feeds[id]||{};
+    const saved=[...tracks.values()].flatMap(track=>track.legs).filter(leg=>leg.feedId===id && leg.staticPath);
     const date=info.cachedAt?new Date(info.cachedAt).toLocaleDateString('en-AU',{day:'numeric',month:'short',timeZone:'Australia/Sydney'}):'';
-    const state=info.job?.status==='error' ? `Error: ${info.job.error}` :
+    const state=saved.length ? `${saved.length} locked service(s) saved on this device` : info.job?.status==='error' ? `Error: ${info.job.error}` :
       ['queued','downloading','indexing'].includes(info.job?.status) ? info.job.status :
       info.cachedAt ? `${info.stale?'Stale':'Ready'} · ${date} · ${info.meta?.trips?.toLocaleString('en-AU')||'?'} trips`:'Not downloaded';
     return `<label class="schedule-option"><input type="checkbox" data-feed="${id}" ${selectedScheduleFeeds.has(id)?'checked':''}><span><strong>${safe(name)}</strong><small class="${info.job?.status==='error'?'sync-error':''}">${safe(state)}</small></span></label>`;
   }).join('');
-  $('syncTimetables').disabled=!connected()||!selectedScheduleFeeds.size||scheduleStatus?.running;
-  $('syncTimetables').textContent=scheduleStatus?.running?'Synchronising...':'Sync selected timetables';
+  $('syncTimetables').disabled=!connected()||!selectedScheduleFeeds.size||syncInProgress;
+  $('syncTimetables').textContent=syncInProgress?'Linking services...':'Link locked services';
   const selected=[...selectedScheduleFeeds].filter(id=>feeds[id]?.cachedAt && !feeds[id].stale);
-  $('syncMessage').textContent=scheduleStatus?.running?'Downloading/indexing schedules on your local server. Live journeys continue updating.':
-    `${selected.length} selected feed(s) ready. First sync may take several minutes for large bus timetables.`;
+  if (!syncInProgress) $('syncMessage').textContent=tracks.size ? 'Downloads one feed at a time and saves matched stop sequences with your locked services. Keep this tab open until finished.' : 'Lock journeys first, then link their services here. Server timetable caches are temporary.';
 }
 function renderScheduleBand(){
-  const required=relevantScheduleFeeds();
-  const feeds=scheduleStatus?.feeds||{};
-  const ready=required.filter(id=>feeds[id]?.cachedAt && !feeds[id]?.stale);
-  const stale=required.filter(id=>!feeds[id]?.cachedAt||feeds[id]?.stale);
-  $('gtfsDot').classList.toggle('ready',required.length>0 && stale.length===0);
-  $('gtfsBandStatus').textContent=scheduleStatus?.running?'Static schedules are synchronising in the background on this server.':
-    !required.length?'Add routes to choose GTFS timetable feeds.':
-    `${ready.length}/${required.length} relevant timetable feeds ready.${stale.length?' Sync '+stale.map(id=>SCHEDULE_FEED_NAMES[id]).join(', ')+' to improve matching and stop names.':' Automatic matching and named stops enabled.'}`;
+  const legs=[...tracks.values()].flatMap(track=>track.legs);
+  const linked=legs.filter(leg=>leg.staticPath).length;
+  $('gtfsDot').classList.toggle('ready',legs.length>0 && linked===legs.length);
+  $('gtfsBandStatus').textContent=syncInProgress ? 'Linking services from timetables. Keep this tab open.' :
+    !legs.length ? 'Lock journeys, then link their services to save named stop sequences on this device.' :
+    `${linked}/${legs.length} locked service(s) have saved stop sequences.${linked<legs.length?' Link services to improve matching and stop names.':' Saved sequences survive server restarts.'}`;
 }
 async function loadScheduleStatus(){
   try {
@@ -557,28 +563,46 @@ async function loadScheduleStatus(){
     scheduleStatus=await response.json();
     if(!scheduleSelectionInitialised && routes.length){selectedScheduleFeeds=new Set(relevantScheduleFeeds());scheduleSelectionInitialised=true;}
     renderScheduleSettings();renderScheduleBand();
-    if(autoSyncSchedules&&connected()&&!scheduleStatus.running&&Date.now()-lastAutoSyncAttempt>3_600_000){
+    if(autoSyncSchedules&&tracks.size&&connected()&&!syncInProgress&&!scheduleStatus.running&&Date.now()-lastAutoSyncAttempt>3_600_000){
       const pending=[...selectedScheduleFeeds].filter(id=>scheduleStatus?.feeds?.[id]?.stale);
       if(pending.length){lastAutoSyncAttempt=Date.now();void syncSchedules(pending);}
     }
     if(scheduleStatus.running)setTimeout(()=>void loadScheduleStatus(),5000);
   } catch { $('gtfsBandStatus').textContent='Timetable status unavailable; live tracking can still work without schedule indexes.'; }
 }
+let syncInProgress = false;
 async function syncSchedules(feedIds=[...selectedScheduleFeeds]) {
-  if(!connected()){openSettings('Enter your TfNSW API key before downloading static schedules.');return;}
-  if(!feedIds.length)return;
+  if(!connected()){openSettings('Enter your TfNSW API key before linking timetable services.');return;}
+  if(!feedIds.length || syncInProgress)return;
+  if(!tracks.size){showBanner('Lock a shown journey before linking its timetable services.',true);return;}
+  syncInProgress=true; setConnectionUI();renderScheduleSettings();renderScheduleBand();
+  const failed=[];
   try {
-    const res=await fetchApi('/api/static/sync',{method:'POST',body:JSON.stringify({feeds:feedIds})});
-    showBanner(`Static GTFS synchronisation started for ${res.started.length} feed(s). Tracking stays available while indexing.`);
-    await loadScheduleStatus();
-  } catch(e){showBanner(`Static GTFS: ${e.message}`,true);}
+    for (const [index,id] of feedIds.entries()) {
+      if(!connected())break;
+      $('syncMessage').textContent=`Linking ${SCHEDULE_FEED_NAMES[id]} (${index+1}/${feedIds.length})…`;
+      const version=refreshVersion;
+      try {
+        const res=await fetchApi('/api/static/sync',{method:'POST',body:JSON.stringify({feeds:[id],tracks:[...tracks.values()]})});
+        if(version!==refreshVersion)continue;
+        if(res.results)acceptTrackedResults(res);
+        if(res.status)scheduleStatus=res.status;
+        render();
+      } catch(error){failed.push(`${SCHEDULE_FEED_NAMES[id]}: ${error.message}`);}
+    }
+    if(failed.length)showBanner(failed.join('. '),true);
+    else if(connected())showBanner('Timetable linking finished. Matched stop sequences are saved with your locked journeys. Ambiguous services remain unlinked.');
+  } finally {
+    syncInProgress=false; renderScheduleSettings();renderScheduleBand();
+    if(connected())void refreshRoutes();
+  }
 }
 
 async function testConnection() {
   if (checkingConnection) return;
   const entered = $('apiKey').value.trim().replace(/^apikey\s+/i,'');
   const target = $('connectionResults');
-  if (!entered && !serverKeyConfigured) { target.textContent='Enter an API key above first.'; return; }
+  if (!entered) { target.textContent='Enter an API key above first.'; return; }
   checkingConnection=true; $('checkConnection').disabled=true;
   target.textContent='Checking TfNSW access… This may take a minute for several selected feeds.';
   try {
@@ -596,9 +620,9 @@ async function testConnection() {
 function openSettings(message='') {
   $('apiKey').type='password'; $('toggleKey').textContent='Show';
   $('apiKey').value=key;
-  $('apiKey').required = !serverKeyConfigured;
-  $('apiKey').placeholder = serverKeyConfigured ? 'Server key configured • optional override' : 'Enter your TfNSW API key';
-  $('connectionInfo').textContent = serverKeyConfigured ? 'Your server key is configured in .env and stays on the server. Leave this field empty to use it, or enter a temporary key for this tab.' : 'Enter your TfNSW API key to search stops and compare journeys. The key stays in this tab’s memory and is not saved by the app.';
+  $('apiKey').required = true;
+  $('apiKey').placeholder = 'Enter your TfNSW API key';
+  $('connectionInfo').textContent = 'Enter your TfNSW API key to search stops and compare journeys. It stays in this tab’s memory and is sent over HTTPS to this app’s server only to call TfNSW. It is not saved. Re-enter it after reloading.';
   if (message) showBanner(message);
   $('autoSyncSchedules').checked = autoSyncSchedules;
   $('settingsDialog').showModal();
@@ -656,10 +680,10 @@ function bindEvents() {
   $('toggleKey').addEventListener('click',()=>{const inp=$('apiKey');inp.type=inp.type==='password'?'text':'password';$('toggleKey').textContent=inp.type==='password'?'Show':'Hide';});
   $('settingsForm').addEventListener('submit', event=>{
     event.preventDefault();const entered=$('apiKey').value.trim().replace(/^apikey\s+/i,'');
-    if (!entered && !serverKeyConfigured) return;
+    if (!entered) return;
     refreshVersion++; disconnected=false;
     key=entered;lastSuccessfulAt='';lastRefreshErrors=false;stopLookups=new Map();routeResults=new Map();trackedResults=new Map();routeChanges=new Map();
-    $('settingsDialog').close();showBanner(key ? 'API key configured for this tab. Checking saved routes now.' : 'Using the server API key. Checking saved routes now.');render();refreshRoutes();void loadScheduleStatus();
+    $('settingsDialog').close();showBanner('API key configured for this tab. Checking saved routes now.');render();refreshRoutes();void loadScheduleStatus();
   });
   $('disconnect').addEventListener('click',()=>{refreshVersion++;disconnected=true;key='';$('apiKey').value='';lastSuccessfulAt='';lastRefreshErrors=false;routeResults=new Map();trackedResults=new Map();routeChanges=new Map();$('settingsDialog').close();showBanner('API key disconnected. Saved routes remain on this device.');render();});
   $('comparisonGroups').addEventListener('change', event => {
@@ -696,11 +720,11 @@ async function initialise() {
   try {
     const response = await fetch('/api/config', {cache:'no-store'});
     if (!response.ok) throw new Error('Cannot read server configuration.');
-    serverKeyConfigured = Boolean((await response.json()).serverKeyConfigured);
+    await response.json();
     render();
     if (connected()) void refreshRoutes();
     else showBanner('Add your TfNSW API key in API settings to start searching and comparing routes.');
-  } catch { showBanner('Cannot connect to the local server. Refresh the page to retry.', true); }
+  } catch { showBanner('Cannot connect to the app server. Refresh the page to retry.', true); }
   void loadScheduleStatus();
   setInterval(updateClock,1000);
   setInterval(()=>void loadScheduleStatus(),60000);

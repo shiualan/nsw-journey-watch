@@ -5,8 +5,6 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:4173:4173"
-    env_file:
-      - .env
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0

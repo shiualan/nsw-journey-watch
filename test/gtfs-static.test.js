@@ -15,7 +15,7 @@ const leg = (overrides={}) => ({
   plannedDeparture:'2026-10-21T21:00:00.000Z',plannedArrival:'2026-10-21T21:25:00.000Z',
   tripIdCandidates:[] ,...overrides
 });
-const track = (l=leg()) => ({id:'r1',label:'Route A',lockedAt:'2026-10-21T20:55:00.000Z',
+const track = (l=leg()) => ({id:'r1',label:'Route A',lockedAt:new Date().toISOString(),
   baseline:{departure:l.departure,arrival:l.arrival,transfers:0,walkingMinutes:0,stages:[]},legs:[l]});
 
 test('ZIP schedule importer indexes GTFS routes, stops, trips and quoted CSV fields',async()=>{

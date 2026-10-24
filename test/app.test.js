@@ -19,26 +19,27 @@ class Element {
   scrollIntoView() {}
 }
 function app({fetchImpl=async()=>Response.json({}), storageUnavailable=false}={}) {
-  const elements=new Map(), timers=[];
+  const elements=new Map(), timers=[], storage=new Map();
   const element=id=>{ if(!elements.has(id)) elements.set(id,new Element()); return elements.get(id); };
   const context=vm.createContext({
     console, Intl, Date, Map, Set, Response, Event,
     fetch:fetchImpl,
-    localStorage:{getItem(){if(storageUnavailable)throw new Error('Storage blocked');return null;},setItem(){}},
+    localStorage:{getItem(){if(storageUnavailable)throw new Error('Storage blocked');return storage.get(arguments[0]) || null;},setItem(name,value){storage.set(name,value);}},
     document:{getElementById:element,createElement:()=>new Element(),querySelector:()=>new Element(),querySelectorAll:()=>[],visibilityState:'visible'},
     setTimeout:callback=>timers.push(callback),clearTimeout(){},setInterval(){}
   });
   vm.runInContext(source,context);
   const run=code=>vm.runInContext(code,context);
-  return {run,element,timers,context};
+  return {run,element,timers,context,storage};
 }
 
-test('client can load with storage disabled and use server credentials without copying a key', async () => {
+test('client works without browser storage and requires a tab key', async () => {
   const calls=[];
   const a=app({storageUnavailable:true,fetchImpl:async(path,opts)=>{calls.push({path,opts});return Response.json({stops:[]});}});
-  a.run('serverKeyConfigured=true');
+  await assert.rejects(a.run("fetchApi('/api/stops?q=Central')"),/Connect/);
+  a.run("key='test-tab-key'");
   await a.run("fetchApi('/api/stops?q=Central')");
-  assert.ok(!Object.hasOwn(calls[0].opts.headers,'X-TfNSW-Key'));
+  assert.equal(calls[0].opts.headers['X-TfNSW-Key'],'test-tab-key');
   a.run("key='temporary-tab-key'");
   await a.run("fetchApi('/api/stops?q=Central')");
   assert.equal(calls[1].opts.headers['X-TfNSW-Key'],'temporary-tab-key');
@@ -48,7 +49,7 @@ test('client can load with storage disabled and use server credentials without c
 
 test('failed refresh removes an old itinerary from the comparison', async () => {
   const a=app({fetchImpl:async()=>{throw new Error('Network unavailable');}});
-  a.run("render=()=>{}; updateClock=()=>{}; serverKeyConfigured=true; routes=[{id:'one',label:'Train'}]; routeResults.set('one',{ok:true,data:{arrival:new Date(Date.now()+60000).toISOString()}})");
+  a.run("render=()=>{}; updateClock=()=>{}; key='test-tab-key'; routes=[{id:'one',label:'Train'}]; routeResults.set('one',{ok:true,data:{arrival:new Date(Date.now()+60000).toISOString()}})");
   await a.run('refreshRoutes()');
   assert.equal(a.run("routeResults.get('one').ok"),false);
   assert.match(a.run("routeResults.get('one').error"),/Network unavailable/);
@@ -62,7 +63,7 @@ test('failed refresh removes an old itinerary from the comparison', async () => 
 test('disconnecting while a request is pending prevents old results from restoring live state', async () => {
   let complete;
   const a=app({fetchImpl:()=>new Promise(resolve=>{complete=resolve;})});
-  a.run("render=()=>{}; updateClock=()=>{}; serverKeyConfigured=true; routes=[{id:'one',label:'Train'}]");
+  a.run("render=()=>{}; updateClock=()=>{}; key='test-tab-key'; routes=[{id:'one',label:'Train'}]");
   const pending=a.run('refreshRoutes()');
   a.run('refreshVersion++; disconnected=true; routeResults=new Map()');
   complete(Response.json({results:[{ok:true,data:{id:'one',arrival:new Date(Date.now()+60000).toISOString()}}]}));
@@ -88,7 +89,7 @@ test('past arrival times cannot win the dashboard recommendation', () => {
 test('stop picker supports arrow keys, Enter selection, and Escape without closing the editor', async () => {
   const choice={id:'10101100',name:'Central Station'};
   const a=app({fetchImpl:async()=>Response.json({stops:[choice]})});
-  a.run('serverKeyConfigured=true');
+  a.run("key='test-tab-key'");
   let selected=null;
   const picker=a.run('stopPicker')('ORIGIN',()=>selected,value=>{selected=value;},false);
   const input=picker.children[1], drop=picker.children[3];
@@ -110,4 +111,18 @@ test('stop picker supports arrow keys, Enter selection, and Escape without closi
   assert.equal(stopped,1);
   await a.timers.at(-1)();
   assert.equal(drop.hidden,true, 'a pending lookup must not reopen after Escape');
+});
+
+
+test('client saves portable paths with locked journeys and clears them when rebinding',()=>{
+  const a=app();
+  a.run(`key='private-test-key';render=()=>{};refreshRoutes=()=>{};
+    tracks.set('one',{id:'one',legs:[{id:'leg',tripId:'',feedId:''}]});
+    acceptTrackedResults({results:[{ok:true,data:{id:'one',fixed:{legs:[{id:'leg',tripId:'trip',feedId:'buses',startDate:'20261024',
+      binding:{source:'static-auto'},staticPath:{tripId:'trip',feedId:'buses',importedAt:'2026-10-24T00:00:00Z',stops:[{name:'Station'}]}}]}}}]});`);
+  const saved=JSON.parse(a.storage.get('journey-watch:fixed:v2'));
+  assert.equal(saved[0].legs[0].staticPath.stops[0].name,'Station');
+  assert.ok(!a.storage.get('journey-watch:fixed:v2').includes('private-test-key'));
+  a.run("bindTripId('one','leg','different-trip','buses','20261024')");
+  assert.equal(a.run("tracks.get('one').legs[0].staticPath"),undefined);
 });
