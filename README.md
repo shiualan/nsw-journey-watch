@@ -29,6 +29,16 @@ Creating this branch does not itself deploy or publish the app. Configure your V
 4. Inspect **Vehicle tracking, named stops & service IDs** and **Named stop sequence**. A strong unique match saves the trip ID, service date, feed and relevant stop sequence with the locked journey in your browser.
 5. The dashboard refreshes once a minute while visible. **Unlock & re-plan** selects new departures. Editing a route clears its locked selection. A manual trip ID binding clears any previously saved path so it can be linked again.
 
+### Clone and customise journeys
+
+Use **Clone** on a route card to open a separate draft with the same stops, modes, service choices and transfer buffer. Change its name or details and save it as another alternative. Cancelling leaves no copy. The original journey and its locked tracking remain intact; a copy starts unlocked.
+
+Use **Edit** to change each leg’s stops, transport mode, **Specific line** (for example `700` under Bus / coach, then `T1` under Train), and **Earliest departure**. Use **Add interchange** to add the next service. Line matching is exact and case insensitive; a specified line requires a single public transport service for that leg. Leave the line empty to allow any service of the chosen mode.
+
+Times are dates and times in **Australia/Sydney**, regardless of your device’s timezone. A blank time searches from now (or from the previous leg’s arrival plus the transfer buffer). A specified time is a lower bound; subsequent legs still respect the connection buffer. The planner chooses the earliest arrival among matching options returned by TfNSW, so a chosen time does not guarantee an exact departure. If the returned options contain no matching line, the route shows an error instead of substituting another line. Try a later departure or more specific stops.
+
+Editing a locked journey pre-fills the selected line and departure for stages containing one service. Saving clears its old lock, trip bindings and saved timetable paths and re-plans; inspect the new result and **Lock this journey** again to monitor it. Other locked alternatives remain intact. Existing saved routes continue to work with blank service settings.
+
 ### Timetables on a serverless host
 
 Vercel functions have temporary storage and may handle consecutive requests on different instances. Timetable ZIPs and compressed indexes use the instance’s temporary directory as a best-effort cache. They are never treated as durable application data.
@@ -71,7 +81,10 @@ Open **http://127.0.0.1:4173** and enter a key in the app. Existing `.env` files
 ```sh
 npm test
 npm run build
+npm run qa:builder
 ```
+
+The builder browser check uses controlled upstream fixtures, exercises cloning and per-leg service editing through the real local API, and checks reload persistence and desktop/mobile layout. It does not require a key or access the live network.
 
 Tests cover route planning, GTFS import/calendars, realtime decoding, matching, delay/cancellation handling, tab key handling, Vercel rewrites and parsed request bodies, completed import requests, and a cold-process test proving saved stop sequences work with an empty server cache. Mocks do not prove access to every live operator feed.
 

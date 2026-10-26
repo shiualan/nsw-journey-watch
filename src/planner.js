@@ -16,9 +16,20 @@ export function validateRoute(route) {
     throw new Error('Choose a transport mode for every segment.');
   }
   if (route.points.some((point, i) => i > 0 && point.id === route.points[i - 1].id)) throw new Error('Consecutive stops must be different.');
+  if (route.services !== undefined && (!Array.isArray(route.services) || route.services.length !== route.modes.length)) throw new Error('Choose service settings for every segment.');
+  const services = route.modes.map((mode, i) => {
+    const service = route.services?.[i] ?? {};
+    if (!service || typeof service !== 'object' || Array.isArray(service)) throw new Error('Invalid service settings.');
+    const line = service.line ?? '';
+    if (typeof line !== 'string' || line.length > 40 || /[<>\r\n]/.test(line)) throw new Error('Invalid service line.');
+    if (line.trim() && mode === 'any') throw new Error('Choose a transport mode for a specific line.');
+    const departureAfter = service.departureAfter || '';
+    if (typeof departureAfter !== 'string' || (departureAfter && (!/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(departureAfter) || !Number.isFinite(Date.parse(departureAfter))))) throw new Error('Invalid service departure time.');
+    return {line:line.trim(), departureAfter};
+  });
   const buffer = Number(route.transferMinutes ?? 5);
   if (!Number.isFinite(buffer) || buffer < 0 || buffer > 30) throw new Error('Transfer buffer must be between 0 and 30 minutes.');
-  return { ...route, transferMinutes: buffer };
+  return { ...route, services, transferMinutes: buffer };
 }
 
 export async function planRoute(routeInput, apiKey, options = {}) {
@@ -29,11 +40,13 @@ export async function planRoute(routeInput, apiKey, options = {}) {
   const stages = [];
   for (let i = 0; i < route.modes.length; i++) {
     const from = route.points[i], to = route.points[i + 1];
+    const service = route.services[i];
+    if (service.departureAfter) at = new Date(Math.max(at.getTime(), Date.parse(service.departureAfter)));
     let journey;
-    try { journey = await getJourney(from, to, route.modes[i], at, apiKey); }
+    try { journey = await getJourney(from, to, route.modes[i], at, apiKey, undefined, service); }
     catch (e) { throw new Error(`${from.name} to ${to.name}: ${e.message}`); }
     if (!journey) {
-      throw new Error(`No ${route.modes[i].replace('_', ' ')} option returned for ${from.name} to ${to.name}. Try choosing more specific stops or allowing another mode.`);
+      throw new Error(`No ${service.line ? `${service.line} ` : ''}${route.modes[i].replace('_', ' ')} option returned for ${from.name} to ${to.name}. Try a later departure, more specific stops, or a different line or mode.`);
     }
     stages.push({ from, to, mode: route.modes[i], ...journey });
     at = new Date(Date.parse(journey.arrival) + route.transferMinutes * 60_000);
@@ -61,7 +74,7 @@ export async function planRoute(routeInput, apiKey, options = {}) {
     location = previous?.to || '';
   }
   return {
-    id: route.id, label: route.label, points: route.points, modes: route.modes,
+    id: route.id, label: route.label, points: route.points, modes: route.modes, services: route.services,
     departure, arrival, minutesFromNow, durationMinutes,
     delayMinutes: Math.round((Date.parse(publicLegs.at(-1)?.arrival || arrival) - Date.parse(publicLegs.at(-1)?.plannedArrival || publicLegs.at(-1)?.arrival || arrival)) / 60000),
     transfers: Math.max(0, publicLegs.length - 1),

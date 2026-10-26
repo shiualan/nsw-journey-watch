@@ -9,7 +9,8 @@
     "dev": "node --watch server.js",
     "test": "node --test",
     "qa:live": "node scripts/verify-browser.mjs",
-    "build": "node scripts/build.mjs"
+    "build": "node scripts/build.mjs",
+    "qa:builder": "node scripts/verify-builder.mjs"
   },
   "engines": {
     "node": "22.x"

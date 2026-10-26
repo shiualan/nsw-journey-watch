@@ -237,7 +237,7 @@ function renderRouteCard(route, result, fastestAt, optionCount) {
       ${data.fixed ? trackingHtml(route,data) : ''}
       ${stagesHtml(data)}`;
   }
-  return `<article class="route-card ${winner?'winner':''}"><div class="card-top"><div><div class="route-tag">${data?.fixed ? 'FIXED SERVICE · NO REPLANNING' : 'Saved alternative · live re-planning'}</div><h3 class="card-title">${safe(route.label)}</h3></div><div class="card-controls"><button type="button" data-action="edit" data-id="${safe(route.id)}" title="Edit route" aria-label="Edit ${safe(route.label)}">Edit</button><button type="button" data-action="delete" data-id="${safe(route.id)}" title="Delete route" aria-label="Delete ${safe(route.label)}">&times;</button></div></div>${contents}<div class="lock-controls">${tracks.has(route.id) ? `<button class="button button-outline" type="button" data-action="unlock" data-id="${safe(route.id)}">Unlock &amp; re-plan</button>` : `<button class="button button-outline" type="button" data-action="lock" data-id="${safe(route.id)}" ${data && connected() ? '' : 'disabled'}>Lock this journey</button>`}</div></article>`;
+  return `<article class="route-card ${winner?'winner':''}"><div class="card-top"><div><div class="route-tag">${data?.fixed ? 'FIXED SERVICE · NO REPLANNING' : 'Saved alternative · live re-planning'}</div><h3 class="card-title">${safe(route.label)}</h3></div><div class="card-controls"><button type="button" data-action="clone" data-id="${safe(route.id)}" aria-label="Clone ${safe(route.label)}">Clone</button><button type="button" data-action="edit" data-id="${safe(route.id)}" title="Edit route" aria-label="Edit ${safe(route.label)}">Edit</button><button type="button" data-action="delete" data-id="${safe(route.id)}" title="Delete route" aria-label="Delete ${safe(route.label)}">&times;</button></div></div>${contents}<div class="lock-controls">${tracks.has(route.id) ? `<button class="button button-outline" type="button" data-action="unlock" data-id="${safe(route.id)}">Unlock &amp; re-plan</button>` : `<button class="button button-outline" type="button" data-action="lock" data-id="${safe(route.id)}" ${data && connected() ? '' : 'disabled'}>Lock this journey</button>`}</div></article>`;
 }
 function render() {
   const groups = groupRoutes();
@@ -463,7 +463,7 @@ function renderRouteBuilder() {
     let caption = i===0 ? 'ORIGIN' : i===locations.length-1 ? 'DESTINATION' : `INTERCHANGE ${i}`;
     const getter = () => i===0 ? draft.origin : i===locations.length-1 ? draft.destination : draft.vias[i-1];
     const setter = loc => { if (index===0) draft.origin=loc; else if (index===locations.length-1) draft.destination=loc; else draft.vias[index-1]=loc; };
-    const remove = () => { draft.vias.splice(index-1,1); draft.modes.splice(index,1); renderRouteBuilder(); };
+    const remove = () => { draft.vias.splice(index-1,1); draft.modes.splice(index,1); draft.services.splice(index,1); renderRouteBuilder(); };
     container.append(stopPicker(caption, getter, setter, index>0 && index<locations.length-1, remove));
     if (i < locations.length-1) {
       const part=document.createElement('div');part.className='mode-between';
@@ -472,21 +472,57 @@ function renderRouteBuilder() {
       for (const [value,text] of Object.entries(MODE_LABEL)) { const op=document.createElement('option');op.value=value;op.textContent=text;op.selected=draft.modes[i]===value;select.append(op); }
       select.addEventListener('change', () => {draft.modes[index]=select.value;});
       part.append(span,select);container.append(part);
+      const settings=document.createElement('div'); settings.className='service-settings';
+      const lineLabel=document.createElement('label'); lineLabel.textContent=`Specific line for leg ${i+1} (optional)`;
+      const line=document.createElement('input'); line.maxLength=40; line.placeholder='e.g. 700 or T1'; line.value=draft.services[i].line || '';
+      line.setAttribute('aria-label',`Specific line for leg ${i+1}`);
+      line.addEventListener('input',()=>{draft.services[index].line=line.value;});
+      lineLabel.append(line);
+      const timeLabel=document.createElement('label'); timeLabel.textContent=`Depart no earlier than (Sydney time)`;
+      const time=document.createElement('input'); time.type='datetime-local'; time.value=sydneyInput(draft.services[i].departureAfter);
+      time.setAttribute('aria-label',`Earliest departure for leg ${i+1} in Sydney time`);
+      time.addEventListener('change',()=>{draft.services[index].departureAfter=sydneyInstant(time.value);});
+      timeLabel.append(time); settings.append(lineLabel,timeLabel); container.append(settings);
     }
   }
   $('addInterchange').disabled = draft.vias.length >= 3;
 }
 
-function openRouteEditor(id = null) {
+function sydneyInput(iso) {
+  if (!iso || !Number.isFinite(Date.parse(iso))) return '';
+  const p=Object.fromEntries(new Intl.DateTimeFormat('en-AU',{timeZone:'Australia/Sydney',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(iso)).map(p=>[p.type,p.value]));
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+}
+function sydneyInstant(value) {
+  if (!value) return '';
+  const target=Date.parse(`${value}Z`);
+  if (!Number.isFinite(target)) return 'invalid';
+  let instant=target;
+  for(let i=0;i<3;i++) instant+=target-Date.parse(`${sydneyInput(new Date(instant).toISOString())}Z`);
+  const result=new Date(instant).toISOString();
+  return sydneyInput(result)===value ? result : 'invalid';
+}
+function openRouteEditor(id = null, clone = false) {
   if (!connected() && !id) { openSettings('Connect an API key to search for stops before adding a route.'); return; }
   const route = routes.find(r => r.id === id);
-  editingId = route?.id || null;
+  if (clone && routes.length >= 12) { showBanner('A maximum of 12 routes can be saved. Delete a route before cloning.',true); return; }
+  editingId = clone ? null : route?.id || null;
   draft = route ? {
     origin:{...route.points[0]}, destination:{...route.points.at(-1)},
     vias:route.points.slice(1,-1).map(p=>({...p})), modes:[...route.modes],
-    transferMinutes:route.transferMinutes ?? 5, label:route.label
-  } : { origin:null, destination:null, vias:[], modes:['any'], transferMinutes:5,label:'' };
-  $('routeDialogTitle').textContent=route ? 'Edit alternative' : 'Add an alternative';
+    services:route.modes.map((_,i)=>({...route.services?.[i]})),
+    transferMinutes:route.transferMinutes ?? 5, label:clone ? `${route.label.slice(0,83)} (copy)` : route.label
+  } : { origin:null, destination:null, vias:[], modes:['any'], services:[{}], transferMinutes:5,label:'' };
+  const locked=route && tracks.get(route.id);
+  if (locked) for (let i=0;i<draft.services.length;i++) {
+    const legs=locked.legs.filter(l=>l.stageIndex===i);
+    if (legs.length===1) {
+      draft.modes[i]=legs[0].mode;
+      draft.services[i]={line:legs[0].line,departureAfter:legs[0].departure};
+    }
+  }
+  $('routeDialogTitle').textContent=clone ? 'Clone journey' : route ? 'Edit journey services' : 'Add an alternative';
+  $('routeEditHint').textContent=locked && !clone ? 'Change the line, stops or earliest departure for each leg. Saving clears the locked selection and finds services again; lock the new result to monitor it.' : 'Choose a mode and enter a line (such as bus 700 or train T1), then choose its stops. Add an interchange for the next service. Blank lines allow any service of that mode. Blank times use the next available departure.';
   $('routeLabel').value=draft.label;
   $('transferMinutes').value=draft.transferMinutes;
   $('routeError').textContent='';
@@ -501,7 +537,9 @@ function saveRoute(event) {
   if (points.some((p,i) => i>0 && p.id===points[i-1].id)) { $('routeError').textContent='Consecutive stops must be different.'; return; }
   if (!Number.isFinite(transferMinutes) || transferMinutes<0 || transferMinutes>30) { $('routeError').textContent='Transfer buffer must be between 0 and 30 minutes.'; return; }
   if (!editingId && routes.length >= 12) { $('routeError').textContent='This version supports a maximum of 12 saved routes to manage API usage.'; return; }
-  const entry={id:editingId || makeId(),label,points,modes:draft.modes,transferMinutes};
+  if (draft.services.some((s,i)=>s.line?.trim() && draft.modes[i]==='any')) { $('routeError').textContent='Choose a transport mode for each specific line.'; return; }
+  if (draft.services.some(s=>s.departureAfter && !Number.isFinite(Date.parse(s.departureAfter)))) { $('routeError').textContent='Choose a valid Sydney departure time.'; return; }
+  const entry={id:editingId || makeId(),label,points,modes:[...draft.modes],services:draft.services.map(s=>({...s,line:s.line?.trim() || ''})),transferMinutes};
   refreshVersion++;
   if (editingId) routes=routes.map(r=>r.id===editingId?entry:r);
   else routes=[...routes,entry];
@@ -676,7 +714,7 @@ function bindEvents() {
     if (locked) { render(); showBanner(`${locked} journey alternative(s) frozen to their original services.`); refreshRoutes(); }
   });
   $('routeForm').addEventListener('submit',saveRoute);
-  $('addInterchange').addEventListener('click',()=>{if (draft.vias.length>=3) return; draft.vias.push(null); draft.modes.push(draft.modes.at(-1)||'any');renderRouteBuilder();});
+  $('addInterchange').addEventListener('click',()=>{if (draft.vias.length>=3) return; draft.vias.push(null); draft.modes.push(draft.modes.at(-1)||'any'); draft.services.push({});renderRouteBuilder();});
   $('toggleKey').addEventListener('click',()=>{const inp=$('apiKey');inp.type=inp.type==='password'?'text':'password';$('toggleKey').textContent=inp.type==='password'?'Show':'Hide';});
   $('settingsForm').addEventListener('submit', event=>{
     event.preventDefault();const entered=$('apiKey').value.trim().replace(/^apikey\s+/i,'');
@@ -704,6 +742,7 @@ function bindEvents() {
       bindTripId(id,button.dataset.leg,field?.value.trim() || ''); return;
     }
     if (button.dataset.action==='un-bind') {bindTripId(id,button.dataset.leg,''); return;}
+    if (button.dataset.action==='clone') openRouteEditor(id,true);
     if (button.dataset.action==='edit') openRouteEditor(id);
     if (button.dataset.action==='delete' && window.confirm(`Delete "${route.label}"?`)) {
       refreshVersion++;

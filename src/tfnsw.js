@@ -157,11 +157,16 @@ export function normaliseJourney(journey, requiredMode = 'any') {
   };
 }
 
-export function selectJourney(payload, mode, notBefore) {
+export function selectJourney(payload, mode, notBefore, service = {}) {
   if (!MODES.includes(mode)) throw new Error('Invalid mode.');
   const raw = Array.isArray(payload?.journeys) ? payload.journeys : [];
   const viable = raw.map(j => normaliseJourney(j, mode)).filter(Boolean)
-    .filter(j => Date.parse(j.departure) >= notBefore.getTime() - 90_000)
+    .filter(j => {
+      if (!service.line) return true;
+      const publicLegs = j.legs.filter(l => l.mode !== 'walk');
+      return publicLegs.length === 1 && publicLegs[0].line.trim().toUpperCase() === service.line.trim().toUpperCase();
+    })
+    .filter(j => Date.parse(j.departure) >= notBefore.getTime() - (service.departureAfter || service.line ? 0 : 90_000))
     .sort((a, b) => Date.parse(a.arrival) - Date.parse(b.arrival) || Date.parse(a.departure) - Date.parse(b.departure));
   return viable[0] || null;
 }
@@ -208,7 +213,7 @@ export async function findStops(query, key, fetchImpl = fetch) {
   return normaliseStops(response);
 }
 
-export async function getBestJourney(from, to, mode, when, key, fetchImpl = fetch) {
+export async function getBestJourney(from, to, mode, when, key, fetchImpl = fetch, service = {}) {
   const response = await tfnswGet(tripUrl(from, to, mode, when), key, fetchImpl);
-  return selectJourney(response, mode, when);
+  return selectJourney(response, mode, when, service);
 }

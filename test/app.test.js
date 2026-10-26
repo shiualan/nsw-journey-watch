@@ -17,6 +17,8 @@ class Element {
   addEventListener(name,callback) { this.events[name]=callback; }
   querySelectorAll() { return []; }
   scrollIntoView() {}
+  showModal() { this.open=true; }
+  close() { this.open=false; }
 }
 function app({fetchImpl=async()=>Response.json({}), storageUnavailable=false}={}) {
   const elements=new Map(), timers=[], storage=new Map();
@@ -125,4 +127,40 @@ test('client saves portable paths with locked journeys and clears them when rebi
   assert.ok(!a.storage.get('journey-watch:fixed:v2').includes('private-test-key'));
   a.run("bindTripId('one','leg','different-trip','buses','20261024')");
   assert.equal(a.run("tracks.get('one').legs[0].staticPath"),undefined);
+});
+
+
+test('cloning creates an independent draft and saved route without changing the source lock', () => {
+  const a=app();
+  a.run("render=()=>{}; refreshRoutes=()=>{}; routes=[{id:'source',label:'Bus then train',points:[{id:'a',name:'A'},{id:'b',name:'B'},{id:'c',name:'C'}],modes:['bus','train'],services:[{line:'700'},{line:'T1'}],transferMinutes:5}]; tracks.set('source',{legs:[]})");
+  a.run("openRouteEditor('source',true)");
+  assert.equal(a.run('editingId'),null);
+  assert.equal(a.element('routeLabel').value,'Bus then train (copy)');
+  a.run("draft.services[0].line='701'; draft.origin.name='Changed'; saveRoute({preventDefault(){}})");
+  assert.equal(a.run('routes.length'),2);
+  assert.equal(a.run('routes[0].points[0].name'),'A');
+  assert.equal(a.run('routes[0].services[0].line'),'700');
+  assert.equal(a.run('routes[1].services[0].line'),'701');
+  assert.equal(a.run("tracks.has('source')"),true);
+  assert.notEqual(a.run('routes[1].id'),'source');
+  assert.equal(JSON.parse(a.storage.get('journey-watch:routes:v1')).length,2);
+});
+
+test('editing a locked service seeds its line and departure, then clears only its stale tracking', () => {
+  const a=app();
+  a.run("render=()=>{}; refreshRoutes=()=>{}; routes=[{id:'source',label:'Train',points:[{id:'a',name:'A'},{id:'b',name:'B'}],modes:['any']}]; tracks.set('source',{legs:[{stageIndex:0,mode:'train',line:'T1',departure:'2026-10-22T22:00:00Z'}]}); tracks.set('other',{legs:[]})");
+  a.run("openRouteEditor('source')");
+  assert.equal(a.run('draft.modes[0]'),'train');
+  assert.equal(a.run('draft.services[0].line'),'T1');
+  a.run("draft.services[0].departureAfter='2026-10-22T22:15:00Z'; saveRoute({preventDefault(){}})");
+  assert.equal(a.run("tracks.has('source')"),false);
+  assert.equal(a.run("tracks.has('other')"),true);
+  assert.equal(a.run('routes[0].services[0].departureAfter'),'2026-10-22T22:15:00Z');
+});
+
+test('Sydney departure inputs are independent of browser timezone and handle daylight saving', () => {
+  const a=app();
+  assert.equal(a.run("sydneyInstant('2026-10-23T09:00')"),'2026-10-22T22:00:00.000Z');
+  assert.equal(a.run("sydneyInstant('2026-07-23T09:00')"),'2026-07-22T23:00:00.000Z');
+  assert.equal(a.run("sydneyInstant('2026-10-04T02:30')"),'invalid');
 });

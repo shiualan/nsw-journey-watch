@@ -287,3 +287,8 @@ h1 em { font-style:normal; color:var(--lime); }
 .pending-pills {margin-top:20px;}
 .selected-hint {color:#a5adb2;}
 .selected-hint.has-selection {color:var(--lime);}
+
+.service-settings { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:0 0 20px; }
+.service-settings label { min-width:0; font-size:12px; }
+.service-settings input { margin-top:8px; width:100%; min-width:0; }
+@media(max-width:540px) { .service-settings { grid-template-columns:1fr; } }

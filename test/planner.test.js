@@ -100,3 +100,42 @@ test('reject invalid route descriptions and impossible stops',()=>{
   assert.throws(()=>validateRoute({id:'good',label:'Missing mode',points:[blacktown,central],modes:[]}),/mode/);
   assert.throws(()=>validateRoute({id:'good',label:'Same stop',points:[blacktown,blacktown],modes:['train']}),/different/);
 });
+
+test('specific lines reject other lines and transfers, without matching prefixes', () => {
+  const leg = (line, dep='09:05', arr='09:30') => {
+    const raw=mkLeg(5,blacktown,parramatta,dep,arr);
+    raw.transportation.name=line;
+    return raw;
+  };
+  const payload={journeys:[
+    {legs:[leg('700X','09:01','09:10')]},
+    {legs:[leg('701','09:02','09:12')]},
+    {legs:[leg('700','09:03','09:15'),leg('700','09:16','09:20')]},
+    {legs:[leg('700')]}
+  ]};
+  assert.equal(selectJourney(payload,'bus',new Date(dt('09:00')),{line:'700'}).arrival,dt('09:30'));
+  assert.equal(selectJourney(payload,'bus',new Date(dt('09:00')),{line:'999'}),null);
+  assert.equal(selectJourney(payload,'bus',new Date(dt('09:06')),{line:'700'}),null);
+});
+
+test('service timing and line choices flow through all legs while respecting connections', async () => {
+  const calls=[];
+  const route={id:'selected',label:'700 then T1',points:[blacktown,parramatta,central],modes:['bus','train'],transferMinutes:5,
+    services:[{line:'700',departureAfter:dt('09:10')},{line:'T1',departureAfter:dt('09:20')}]};
+  const result=await planRoute(route,'key',{now:new Date(dt('09:00')),getJourney:async(from,to,mode,when,key,fetchImpl,service)=>{
+    calls.push({when:when.toISOString(),line:service.line});
+    return selectJourney({journeys:[{legs:[mkLeg(mode==='bus'?5:1,from,to,mode==='bus'?'09:10':'09:40',mode==='bus'?'09:30':'10:10')]}]},mode,when,service);
+  }});
+  assert.deepEqual(calls,[{when:dt('09:10'),line:'700'},{when:dt('09:35'),line:'T1'}]);
+  assert.equal(result.arrival,dt('10:10'));
+  assert.deepEqual(result.services,route.services);
+});
+
+test('service settings validate optional legacy routes and reject malformed choices', () => {
+  const route={id:'selected',label:'Train',points:[blacktown,central],modes:['train']};
+  assert.deepEqual(validateRoute(route).services,[{line:'',departureAfter:''}]);
+  for (const services of [[],[false],[{line:700}],[{line:'T1',departureAfter:'tomorrow'}],[{departureAfter:'2026-10-22T09:00'}]]) {
+    assert.throws(()=>validateRoute({...route,services}));
+  }
+  assert.throws(()=>validateRoute({...route,modes:['any'],services:[{line:'T1'}]}),/mode/);
+});
